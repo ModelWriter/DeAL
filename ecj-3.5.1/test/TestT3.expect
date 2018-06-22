@@ -1,0 +1,4 @@
+T0(*) = false
+T0(a.next) = !=(x, null)
+T0(b.next) = !=(x, null)
+1 predicate function needed

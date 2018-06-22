@@ -1,0 +1,12 @@
+apidoc
+check-properties
+clean
+compile-mmtk
+cross-compile-host
+cross-compile-target
+jdocs
+prepare-config-source
+prepare-source
+real-clean
+runtime
+very-clean

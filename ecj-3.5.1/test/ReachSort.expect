@@ -1,0 +1,5 @@
+exists o: reach[a, b](o)
+exists o: reach[a, b](o)
+exists o: reach[a/c, b/{d, e}](o)
+exists o: reach[{a, b, c, d}](o)
+exists o: reach[/{a, c}](o)

@@ -1,0 +1,267 @@
+This is the README file for the ECJ part of the GC Assertions
+framework, version 3.
+
+
+Introduction
+============
+The GC Assertions framework for ECJ/Jikes consists of two components:
+a compiler (part of this package) and a modified Java VM (part of a
+separate package).  To use this framework, you need both packages.
+
+The GC Assertions framework allows you to place certain heap traversal
+assertions within Java source code.  These assertions are checked
+whenever executed, by exploiting the VM's regular garbage collection
+mechanism.  They assert certain object-local properties, but can
+assert these properties over all reachable objects on the heap, which
+would not normally be possible for a regular Java program.
+
+
+This documentation describes the setup and use of the GC Assertions
+framework and some high-level debugging operations.  To understand the
+inner workings of this mechanism or extend it, please make sure to
+also read the README file accompanying the Jikes component of this
+system.
+
+
+Setup
+=====
+To use the GC Assertions framework, you must install both this ECJ
+component and the Jikes component (available separately.)  This
+section describes how to install the ECJ component; to test your GC
+Assertions, you must also install the Jikes component.
+
+To build this package, run
+
+  ant
+
+in the root directory.  To test that compilation was successful, run
+
+  make test
+
+in the same directory.  The result should be some debug output and a
+number of green `OK' messages.  If you encounter any red `ERROR'
+messages, part of your setup may be broken.  In that case, run
+
+  make nonjikes-test
+
+If this eliminates all red messages, your compiler is fully
+operational but your Jikes component may or may not be fully
+operational.  Edit the `Makefile' and point the variable `JIKES' to
+the correct location of your Jikes runtime.  Either the
+BaseBaseGCAssertions runtime or the FastAdaptiveGCAssertions runtime
+are suitable.  Re-run `make test'; all of your error messages should
+now have disappeared.  If not, you may be running broken or
+incompatible versions of the ECJ or Jikes components.
+
+
+Usage
+=====
+You can run the modified Eclipse compiler as you would run any other
+Java compiler, and you can compile regular Java programs with it.
+This implementation provides additional debugging operations
+(cf. `Debugging interface,' below), but these are only of use for GC
+Assertions framework developers.
+
+To introduce a GC assertion into your code, use any of the following
+constructs:
+
+  GCAssert.assert( <assertion> )    // JDK 1.4 or earlier only
+  GCAssert.assertion( <assertion> )
+  GCAssert.asserDisjoint( <assertion> )
+  GCAssert.assumeDisjoint( <assertion> )
+
+where <assertion> is a pure boolean Java expression enlosed in double
+quotes.  This expression may contain any of the following:
+ - parentheses
+ - ||, &&, !
+ - ==, !=, <=, =>, <, >
+ - true, false
+ - integers
+ - `instanceof' checks
+ - null
+ - field access (e.g., `obj.value')
+ - references to program variables/fields
+ - references to quantified variables (see below)
+
+as well as the following special constructs, explained in the
+following:
+
+ - E1 -> E2		// short for !E1 || E2
+ - forall Type x : Body
+ - exists Type x : Body
+ - reach(spec)[x]
+
+The `forall' and `exists' forms take one type (`Type') and one
+variable (`x') that may be used within their `Body.'  They act as
+boolean expressions with the following meanings:
+
+  `forall Type x : Body' is true iff for all live objects `x' on the
+heap such that x is a subtype of `Type', the property `Body' holds.
+
+  `exists Type x : Body' is true iff there exists at least one live
+object `x' on the heap such that x is a subtype of `Type' and the
+property `Body' holds.
+
+  Within such a `Body', the form `reach(spec)[x]' is a boolean
+expression denoting the idea that `x is transitively reachable from
+spec' (see below for a discussion of reach specs.)
+This form is permissible only within a `Body', as long as `x' is the
+exact variable being quantified over:
+
+  forall Node x : reach(spec)[x]
+
+is permissible, but
+
+  forall Node x : reach(spec)[other_node]
+
+is not (even if `other_node' is a perfectly valid node.)
+
+Note that no `Body' may contain a `forall' or `exists' quantifier.
+Also, the forms of reach specs are restricted, as described below.
+
+Reach specs
+-----------
+
+A reach spec has the form (in quasi-BNF):
+
+ReachSpec ::= <ReachSpecItem>
+            | <ReachSpecItem> ',' ... ',' <ReachSpecItem>
+
+ReachSpecItem ::= <Set>
+                | <Set> '/' <Set>
+		|       '/' <Set>
+
+Set ::= <Var>
+      | '{' <Var> ',' ... ',' <Var> '}'
+
+where <Var> is a local variable or field.  A reach spec describes a
+set of objects on the heap through notions of `ancestors' and
+`filters'.  For example, the spec
+
+  { a, b, c } / { e, f }
+
+has three ancestors (a, b, c) and two filters (e, f).  This set
+describes all nodes that are reachable from `a', `b', or `c' without
+passing through `e' or `f'.
+
+Ancestors always appear to the left of a `/', filters on the right.
+If a reach spec (item) does not contain a slash, the specified set is
+assumed to be an ancestor set (with an empty filter set).  For
+simplicity, a singleton set
+
+  {a}
+
+  can be written
+
+  a
+
+
+Combining multiple reach spec items gives a cumulative effect:
+
+  a/b, c/d
+
+describes all nodes that are reachable either:
+- from `a' without passing through `b', or
+- from `c' without passing through `b' or passing through `d'.
+
+The special form
+
+  /X
+
+describes all nodes reachable from the root set without going through
+X.
+
+Reach specs are subject to the `Singularity Condition' or the
+`Disjointness Condition'.  When using the `GCAssert.assert' or
+`GCAssert.assertion' form, the singularity condition applies:
+
+  Singularity Condition:
+    For any GC assertion, there must be at most one `spec' such that
+    `reach(spec)[z]' occurs in the body of that assertion (for some
+    `z.')
+
+If this is too restrictive, the `GCAssert.assertDisjoint' form may be
+used.  This form has almost the same semantics as
+`GCAssert.assertion', except that the Singularity Condition is
+replaced by the less restrictive Disjoingness Condition.  However,
+checking is somewhat slower (around 10% over the cost of a single
+garbage collection or so.)
+
+  Disjointness Condition:
+    For any GC assertion, let `SPEC' be the set of all `spec' such
+    that `reach(spec)[z]' occurs in the body of that assertion (for
+    some `z.').  Then the sets of all objects reachable from any
+    specs in `SPEC' are mutually disjoint.
+
+Due to implmentation condsiderations, this set `SPEC' may be no larger
+than 15 (allowing 15 different reach specs in one assertion.)
+The system will test the Disjointness Condition and abort with an
+assertion failure similar to a regular assertion failure (but with a
+different error message) if the condition was not met.
+
+If this is still too restrictive, the `GCAssert.assumeDisjoint' form
+may be used.  This form carries no restrictions but is incomplete and
+unsound:  objects reachable from more than one distinct spec may be
+tested only partially, which may cause false negatives or false
+positives.
+
+
+Examples for using the assertions
+---------------------------------
+GCAssert.assertion("exists Object o : o instanceof MyClass")
+
+  There exists at least one live instance of MyClass.
+
+GCAssert.assertion("forall Object o : o instanceof MyClass -> o = v")
+
+  There exists precisely one live instance of MyClass, namely `v'.
+(`v' must be visible as a variable.)
+
+
+(please send me other commented, tested examples)
+
+
+Running against the stub library
+--------------------------------
+After compiling with `ecj', the resultant program cannot run
+standalone, as it relies on a special GC Assertions runtime
+interface.  ECJ provides a stub versions of this interface in the
+`org/mmtk' subdirectory.  Linking against the stubs contained therein
+should satisfy a regular Java runtime (cf. the `test-stub' test cases
+in `Makefile.')
+
+
+Running against Jikes
+---------------------
+Simply use the Jikes `rvm' executable to run the ECJ-compiled class
+files, after building Jikes for either BaseBaseGCAssertions or
+FastAdaptiveGCAssertions.
+
+(See the `test-jikes' test cases in `Makefile' for concrete examples.)
+
+
+Debugging interface
+===================
+This variant of ecj comes with additional debug flags:
+
+ecj -gcaDebug:hook
+
+  This will print a quick message describing the GC assertions
+
+ecj -gcaDebug:ast
+
+  Print the AST of the parsed GC assertion expression
+
+ecj -gcaDebug:T
+
+  Print the predicate families (T) for each quantified expression
+(cf. the paper)
+
+ecj -gcaDebug:traversal
+
+  Print the traversal program generated for each assertion (cf. the
+Jikes GCAssertions document)
+
+ecj -gcaDebug:all
+
+  This will print all of the above (and some more.)

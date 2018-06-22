@@ -1,0 +1,1 @@
+(forall n: (!reach[r](n)) || (!(n.v) == (42))) && (exists o: (o) instanceof Object)

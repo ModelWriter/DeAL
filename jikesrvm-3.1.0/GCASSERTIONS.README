@@ -1,0 +1,254 @@
+This is the README file for the Jikes RVM part of the GC Assertions
+framework, version 3.
+
+
+If you have not yet the README for the ECJ part of the GC Assertions
+framework for this version, do so now, as this README only covers
+low-level matters.
+
+
+
+Configuring
+===========
+Make sure to set your .ant.properties, in your project root, to the
+correct architecture, e.g.
+
+  host.name=x86_64-linux
+
+if you are on AMD64 and Linux.
+
+Building
+========
+Quick build:
+
+  ant -Dconfig.name=BaseBaseGCAssertions
+
+
+Build for fast runtime:
+
+  ant -Dconfig.name=FastAdaptiveGCAssertions
+
+
+Testing
+=======
+  make
+
+or, for the fast adaptive tests,
+
+  make fastadaptive
+
+
+Running
+=======
+
+  The system supports the following command-line arguments:
+
+  -X:gc:dummyGCAssertion=true
+    This ensures that during every GC that does not check a regular
+    assertion, we will instead apply a dummy assertion check to each
+    object encountered.  The assertion check is minimal and therefore
+    ideal to measure system overhead.
+
+  -X:gc:dummyGCAssertionwithtraversalID=true
+    (should only be used in conjunction with
+    -X:gc:dummyGCAssertion=true)
+    This extends -X:gc:dummyGCAssertion=true to also track traversal
+    IDs on each object.
+
+  -X:gc:assertfrequency=<n>
+    Assertion checking frequency:
+    -1: never
+    0: always (default)
+    n: every (n+1)st time
+
+  -X:gc:assertonheapfull=true
+    If we decided not assertion checking by frequency: check GC
+    heuristics and collect if we'd normally GC now
+   
+
+
+
+Limitations
+===========
+This won't work on PPC for now (the code generator would have to be
+updated.)
+
+Overlap checks are limited to 15 nested checks:  you can check that
+the reachable or dominated nodes of S0 and S1 do (or do not) overlap,
+then that S2 does (or does not) overlap with (S0 \union S1), and so
+on, up to S14, due to limitations on the number of bits we have
+available.
+
+
+Using the system `by hand'
+==========================
+The easiest way to use this system is to use the ECJ frontend.  If
+that is not available (or not powerful enough or not a good enough
+choice for other reasons), below are the steps needed to run a
+GCAssertion.
+
+First, all relevant classes are in the package
+
+  org.mmtk.plan.marksweep.gcassertions.spec
+
+Assertion
+---------
+This is the main entry point for running assertions.  The static
+`doAssert' method invokes an assertion and returns a boolean to
+determine whether the assertion held up or failed.  Usage:
+
+  PredicateFamily[] predicate_families = ...
+  Step[] steps = ...
+  doAssert(new Assertion(predicate_families, steps));
+
+where PredicateFamily and Step are described below.
+
+PredicateFamily
+---------------
+Each assertion tests a list of predicate families.  Each predicate
+family describes one quantified expression (forall ..., exists ...).
+However, as we pass through different regions on the heap, each of
+these quantified expressions has to test different properties.  For
+example, to check
+
+  forall Node x : (reach(a)[x] -> x.v == 0) &&( reach(b)[x] -> x.v == 1)
+
+has to test three different things:  when `x' is reachable from `a',
+it has to test `x.v == 0' (if `x' is a node); when `x' is reachable
+from `b', it has to test `x.v == 1', and otherwise it has to test
+`true'.  These three cases are three different predicates.  When we
+construct a predicate family, we must provide implementations for each
+of these predicates, as a static helper method in some class C, of the
+following form:
+
+
+  // 2nd static method in this file
+  public static boolean
+  P_a(Object _x, Object[] env)
+  {
+    if (!(_x instanceof Node))
+      return false;
+    final Node x = (Node) _x;
+    return !(x.v == 0);
+  }
+
+  // 3rd static method in this file
+  public static boolean
+  P_b(Object _x, Object[] env)
+  {
+    if (!(_x instanceof Node))
+      return false;
+    final Node x = (Node) _x;
+    return !(x.v == 1);
+  }
+
+Note two things:  first, we included the type check in the
+predicate, and second, negated the return value (only in the case that
+_x had the right type.)  Negating the return value is necessary for
+universal quantification (`forall') due to a technical reason:  the
+predicate should return `true' iff the check is `done,' and for
+`forall' the word `done' means `failed' and for `exists' the word
+`done' means `succeeded' (this hack slightly simplifies the common
+case of the runtime logic.)
+
+To pass P_a and P_b to the PredicateFamily, we tell the family the
+how-many-eth static method in that particular class they are, as
+follows:
+
+PredicateFamily fam =
+   new PredicateFamily(C.class,              // which class
+       		       new int { 1, 2, -1 }, // which methods
+		       null,		     // env
+		       PredicateFamily.UNIVERSAL);
+
+The first parameter is the class storing the predicates.  The second
+is an array of ints containing the indices.  The 2nd static method
+(offset 1) would be represented by `1', the 3rd method (offset 2) by
+`2', and so on.  Methods that always return `not finished yet', i.e.,
+`false' in the existential case or `true' in the universal case, can
+be denoted as -1 (which is slightly faster than producing a `proper'
+predicate.)
+
+The `env' parameter is an optional array of objects.  These are passed
+to the predicates as the second, `env,' parameter.  In conjunction
+with the ECJ frontend they are used to pass the local environment to
+the predicates.
+
+The last parameter can be either PredicateFamily.UNIVERSAL or
+PredicateFamily.EXISTENTIAL and is fairly self-explanatory.
+
+
+Step
+----
+The second parameter to an Assertion is a list of Step objects.  Step
+itself is an abstract class; the remaindeer of this section lists
+various valid steps.  Note that the array of steps must be well-formed,
+accoriding to the following criteria:
+
+- the first entry in the array must be null (used by the Assertion to
+  exclude internal assertion data from the traversal)
+- the last three entries in the array must be null (as above)
+- no other entry may be `null'
+- there must be at least one root node traversal
+- each `ExcludeNodesStep(N)' must eventually be followed by an
+  `IncludeNodesStep(N)', which must in turn be eventually followed by
+  a `TraversalStep(N).'
+
+
+ExcludeNodesStep
+----------------
+Removes a list of nodes from traversal by marking them as `already
+visited.'  This can be exploited for dominance checks or other kinds
+of filtering.
+
+
+IncludeNodesStep
+----------------
+Marks a list of nodes as not having been visited yet.  This operation
+cancels out the ExcludeNodesStep.
+
+
+SetTraversalPredicatesStep
+--------------------------
+This operation sets, for each predicate family (in order) the
+predicate that should be tested during the next TraversalStep.  For
+example, with
+
+SetTraversalPredicatesStep({ 1, 1, 0 })
+
+predicate family #0 would test their predicate at offset 1
+predicate family #1 would test their predicate at offset 1
+predicate family #2 would test their predicate at offset 0
+
+
+SetTraversalIdStep
+------------------
+This operation sets an ID for the current traversal.  If, during the
+traversal, we encounter a heap node that has been tagged with a lower
+ID, we record this fact (cf. Assertion.traversalOverlapped()).  Note
+that using SetTraversalIdStep in a traversal program will activate
+additional code in the GC Assertions system that may slow down
+traversal by up to 10% (over total GC runtime.)  This slowdown is per
+traversal program and independent of where in the program the first
+`SetTraversalIdStep' appears.
+
+TraversalStep
+-------------
+This operation exists in two forms:  without a parameter or with a
+list of nodes.  Without a parameter, this operation recursively marks
+the heap, starting from the root set, ignoring any previously touched
+(or excluded-and-not-yet-re-included) nodes and applying traversal
+predicates and checking for overlap.
+
+With a parameter, the operation does the same, except that it starts
+on the nodes specified as parameter rather than at the root set. 
+
+
+See gtest/Test.java for examples.
+
+
+Playing around with the system
+==============================
+Most of the system logic is in
+MMTk/src/org/mmtk/plan/marksweep/gcassertions/, with some support
+throughout the RVM code.

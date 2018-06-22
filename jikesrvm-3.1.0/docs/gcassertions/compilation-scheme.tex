@@ -1,0 +1,246 @@
+\documentclass{report}
+\usepackage{listings}
+
+\newcommand{\Prod}{::=}
+\newcommand{\VB}{\ |\ }
+\newcommand{\tuple}[1]{\ensuremath{\langle #1 \rangle}}
+\newcommand{\reachOp}{\ensuremath{\mathbf{R}}}
+\newcommand{\reach}[1]{\ensuremath{\reachOp_{#1}}}
+\newcommand{\disjointOp}{\ensuremath{\mathbf{X}}}
+\newcommand{\disjoint}[2]{\ensuremath{{\disjointOp_{#1 + #2}}}}
+\newcommand{\NT}[1]{\textsf{#1}}
+
+\newcommand{\TTexclude}{\textsf{exclude-node}}
+\newcommand{\TTinclude}{\textsf{include-node}}
+\newcommand{\TTtid}{\textsf{mark-traversal-id}}
+\newcommand{\TTset}{\textsf{set-predicates}}
+\newcommand{\TTtrace}{\textsf{trace}}
+\newcommand{\roots}{\ensuremath{\diamond}}
+
+\begin{document}
+
+\section{Heap invariant logic language}
+
+\begin{verbatim}
+Assertion ::= <QExpr> | <BoolExpr> | <Assertion> '||' <Assertion>
+            | <Assertion> '&&' <Assertion> | '!' <Assertion>
+
+Quant ::= 'forall' | 'exists'
+
+QExpr ::= <Quant> <Type> <QName> '.' <BoolExpr>
+
+BinOp ::= '==' | '!='
+
+BoolExpr ::= <Expr> <BinOp> <Expr> | <Expr> 'instanceof' <Type>
+           | <BoolExpr> '&&' <BoolExpr> | <BoolExpr> '||' <BoolExpr>
+           | '!' <BoolExpr>
+           | 'reach' '(' <ReachSpecSeq> ')' '[' <QName> ']'
+           | 'disjoint' '(' <NodeSet> ',' <NodeSet> ')'
+
+ReachSpecSeq ::= <ReachSpec> | <ReachSpecSeq> ',' <ReachSpec>
+
+ReachSpec ::= <ReachSource> | <ReachSource> '/' <NodeSet>
+
+ReachSource ::= 'root' | <NodeSet>
+
+NodeSet ::= '{' <Name> */ ',' '}' | <Name>
+
+Expr ::= <Name> | <QName> | <Expr> '.' <Name> | <int> | 'null'
+\end{verbatim}
+
+In the following, I will typeset the above `more nicely', using LaTeX:
+\reachOp{} instead of \texttt{reach}, and \disjointOp{} instead of
+\texttt{disjoint}.
+
+\section{Trace and test language}
+
+The trace-and-test language implements heap invariant logic on the
+garbage collector side.  A trace-and-test program instructs the
+garbage collector what to mark recursively, what to test for, and what
+individual objects to expressly exclude or include in the traversal.
+
+Each trace-and-test program runs in the context of a \emph{predicate
+  family}.  A predicate family is an indexed family of predicates
+(tests that apply on one object at a time) together with information
+of whether the predicate family is existential or universal.
+Predicate families correspond to \texttt{QExpr}s in the heap invariant
+language.
+
+The sweep algorithm applies one predicate from each family to each
+heap object it encounters (modulo optimisations).
+
+Below are the instructions for our trace-and-test language:
+
+\begin{itemize}
+  \item $\TTexclude(o)$: Exclude object $o$ from traversal.  This
+    operation marks the object $o$ as `live,' meaning that
+    they will be skipped during tracing.
+  \item $\TTinclude(o)$: Mark object $o$ as `unknown' (grey), meaning
+    that $o$ and its children will be traced the next time they are
+    encountered.
+  \item $\TTtid(x)$: Increase the traversal ID.  Each trace colours
+    the objects it encounters with a particular traversal ID.  If a
+    sweep encounters a live object with a traversal ID different from
+    its own, it will flag $x$ as \textsf{false}.
+  \item $\TTset(k_1, \ldots, k_n)$: Set the traversal predicates.
+    This operation sets the particular predicate to test for each
+    predicate family.
+  \item $\TTtrace(o)$: Trace the heap, starting at object $o$.  $o$ may
+    be the special node \roots, meaning all objects in the root set.
+\end{itemize}
+
+
+The default program is `$\TTtrace(\roots)$'.
+
+A trace-and-test program is sound if (a) it includes a
+$\TTtrace(\roots)$ and (b) for all $\TTexclude(o)$, there later is a
+corresponding $\TTinclude(o)$ followed by $\TTtrace(o)$.
+
+\subsection{Compilation}
+
+To compile an assertion $A$ in heap invariant logic into the
+trace-and-test language, we first label
+each top-level \NT{QExpr} or \NT{BoolExpr}
+as $i_k$ for some unique $k$. 
+
+Let $A'$ assertion $A$ with $t_k$ replaced by $i_k$ such that
+\[
+ A'[i_{\overline{k}} \backslash t_{\overline{k}}] = A.
+\]
+Observe that each $t_k$ contains at most one quantifier, and if $t_k$
+contains one or more `\reachOp{}' predicates, the `reach' must be over that
+quantifier's variable.  `\reachOp{}' cannot appear outside of such
+$t_k$.  We can thus partition our tests $t_k$ into the following:
+
+\begin{enumerate}
+\item boolean expressions without reachability/disjointedness predicates
+\item disjointness predicates \disjointOp (possibly negated)
+\item quantified $t_k$
+\end{enumerate}
+
+The first we can evaluate trivially.  Disjointedness tests we handle
+in separation, by ensuring traversal non-overlap.
+This leaves quantified $t_k$ of the form
+
+\[
+  Q x. P_k(x)
+\]
+
+where $Q \in \{ \exists, \forall \}$.
+
+$P_k(x)$ is a predicate that may contain reachability tests based on
+$x$.  $P_k$ may also contain $\disjointOp$ tests; we defer the
+discussion of how we handle this case to
+Section~\ref{sec:embedded-disjointness}.
+
+Note that $P_k$ may contain different `reach' tests, as in $t_1$ below:
+
+\[
+  t_1 \equiv  \forall x. (\reach{a}(x) \wedge x.\textsf{v} = 0) \vee (\reach{b}(x) \wedge x.\textsf{v} = 1)
+\]
+
+  This construction is perfectly legitimate as long as we know that
+`$a$' and `$b$' do not overlap (not knowing this is a static error.)
+
+Each quantified predicate
+$Q x. P_k(x)$
+  we use an object that keeps track of whether P(x) was ever
+satisfied or not satisfied.  However, the concrete test that we have
+to run varies by traversal.  For example, in $t_1$ we expect different
+values for $x.\textsf{v}$ depending on which traversal we encountered `\textsf{x}' in.
+For each test $t_k$, we formalise this through a \emph{context predicate}
+
+\[
+  T_k(r)(x) \equiv P_k(x)[\reach{r}(x) \backslash \textsf{true}][\reach{-}(x) \backslash \textsf{false}]
+\]
+
+where $r \in R$ is one of the subscripts for $reachOp$ that occur in
+the program.
+
+We use the special form $T_k(\star)(x)$ to mean `replace all reachability
+predicates by false' (i.e., `$\star$' is fresh).
+
+  Note that each predicate may have any number of tests associated
+with it.  For example,
+
+\begin{eqnarray*}
+  T_1(a)(x) &=& x.\textsf{v} \textsf{==} 0 \\
+  T_1(b)(x) &=& x.\textsf{v} \textsf{==} 1 \\
+  T_1(\star)(x) &=& \textsf{false}
+\end{eqnarray*}
+
+For each traversal, these context predicates capture our proof
+obligation.  Note that none of the tests contains a reachability
+predicate.
+  Since the set of parameters for $r$ is finite, we can then
+reify each of these tests into a predicate of the form
+
+\begin{lstlisting}[language=Java]
+  final static boolean
+  test_k_r(Type x, Object[] environment)
+\end{lstlisting}
+
+Note that any result that is trivially `\textsf{true}' or
+`\textsf{false}' cannot contribute to a universal test succeeding or
+an existential test failing (respectively), so as a performance
+optimisation we can omit these tests.  Some of the other tests may
+have identical bodies, so we apply global value numbering to ensure
+that we do not needlessly duplicate.
+
+\subsection{Traversing the heap}
+
+To emit trace-and-test code, we choose any order $r_1, \ldots, r_n$
+over the elements of the set $R$ of indices for $\reachOp$ predicates
+that occur in the program.  Observe that we require each of these to
+be disjoint, so the order does not matter.
+
+We thus first emit a $\TTtid(x)$ for a fresh $x$; this $x$ represents
+the fact that we did not overlap any of the previous traversals.  In
+the end, we can use the collection of all $x$ to assert our exclusion
+properties.  In the end, the conjunction of all such $x$ guarantees
+that our $\disjointOp$ predicates (occuring positively) hold.
+
+Considering again our $r_i$, we observe that each has the form
+\[
+r_i = S_0 / I_0, \ldots, S_n / I_n
+\]
+where each $S_i$ is a root set, and each $I_i$ is an ignore set.
+$S_i$ may be $\roots$, meaning that we must trace from the root set.
+
+We begin the traversal with $\TTset(r_i)$, thereby informing each
+predicate family $j$ about the particular traversal pass we are taking and
+asking them to test $T_j(r_i)$, i.e., ensuring that for each predicate
+call, $\reach{r_i}$ is \textsf{true} and $\reach{r_l}$ with $l \ne i$
+is \textsf{false}.
+
+Now, for each pair $S_j / I_j$ in ascending order, we first
+$\TTexclude$ all elements of $I_j$ and then $\TTtrace$
+all elements of $S_j$, in order.  If one of our ignore sets was
+nonempty, this may leave part of the objects reachable from $\bigcup_j
+S_j$ unreached.  We thus continue by $\TTinclude$ and $\TTtrace$ on
+all objects in $\bigcup_j I_j$.
+
+In the end, if we have not already done so, we $\TTtrace(\roots)$ to
+ensure that the garbage collector fulfills its usual purpose, too.
+
+\subsection{Epilogue}
+
+Once the heap traversal is complete, we can fail any existential
+predicate families that have been unable to observe any witness.  We
+now have valuations for all $t_i$ (collected through our test families
+$T_i$) and can evaluate the toplevel assertion.
+
+\subsection{Embedded disjointness tests}\label{sec:embedded-disjointness}
+
+Hmm.  We probably shouldn't allow $\disjointOp$ to occur in
+\texttt{QExpr}.  So this won't be necessary.  (It is possible to `pull
+them out' at least in some cases, though.)
+
+\subsection{Run-time support}
+
+All that we need for run-time support are mechanisms that track the
+status of our predicate families (satisfied, unknown, unsatisfiable)
+and indicators on each object on the heap to indicate the traversal
+ID, to detect overlap.
+
+\end{document}

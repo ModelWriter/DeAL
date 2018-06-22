@@ -1,0 +1,4 @@
+T0(*) = true
+T0(a) = ==(#Ltest/Node;public-int-v(x), (int)0)
+T0(b) = ==(#Ltest/Node;public-int-v(x), (int)1)
+3 predicate functions needed
